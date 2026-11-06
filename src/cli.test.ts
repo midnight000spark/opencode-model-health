@@ -39,8 +39,16 @@ describe("render", () => {
 
   test("prints a summary header and puts problems first", () => {
     const text = render(results)
-    expect(text.split("\n")[0]).toBe("1/2 ✅ · проблем: 1")
+    expect(text.split("\n")[0]).toBe("1/2 ✅ · 1 проблем")
     expect(text.indexOf("a-denied")).toBeLessThan(text.indexOf("z-ok"))
+  })
+
+  test("mentions neutral outcomes in the header", () => {
+    const text = render([
+      { modelID: "a", kind: "skipped", latencyMs: 0 },
+      { modelID: "b", kind: "ok", latencyMs: 1 },
+    ])
+    expect(text.split("\n")[0]).toBe("1/2 ✅ · 1 нейтр.")
   })
 
   test("includes the icon, status and latency of each row", () => {

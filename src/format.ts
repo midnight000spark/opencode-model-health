@@ -13,13 +13,14 @@ export interface HealthOption {
 /** Max characters of a live progress row before it is ellipsised. */
 const PROGRESS_LIMIT = 72
 
-/** Problems first, healthy models last. */
+/** Problems first, then neutral outcomes, healthy models last. */
 const ORDER: readonly ProbeKind[] = [
   "denied",
   "quota",
   "unavailable",
   "network",
   "missing",
+  "skipped",
   "reachable",
   "ok",
 ]
@@ -27,6 +28,7 @@ const ORDER: readonly ProbeKind[] = [
 const ICONS: Record<ProbeKind, string> = {
   ok: "✅",
   reachable: "🟢",
+  skipped: "➖",
   denied: "⛔",
   quota: "⏳",
   missing: "❓",
@@ -37,6 +39,7 @@ const ICONS: Record<ProbeKind, string> = {
 const LABELS: Record<ProbeKind, string> = {
   ok: "работает",
   reachable: "отвечает (мал. лимит probe)",
+  skipped: "не проверяется",
   denied: "нет доступа",
   quota: "квота/лимит",
   missing: "нет модели",
@@ -71,7 +74,8 @@ export function describe(result: ProbeResult): string {
   const parts = [labelFor(result.kind)]
   if (result.status !== undefined) parts.push(`HTTP ${result.status}`)
   if (result.detail !== undefined) parts.push(result.detail)
-  parts.push(`${result.latencyMs}ms`)
+  // A skipped model never made a request, so a latency would be misleading.
+  if (result.kind !== "skipped") parts.push(`${result.latencyMs}ms`)
   return parts.join(" · ")
 }
 
@@ -85,7 +89,7 @@ export function detailFor(result: ProbeResult, name: string): Detail {
   const lines = [`id: ${result.modelID}`, `статус: ${labelFor(result.kind)}`]
   if (result.status !== undefined) lines.push(`HTTP: ${result.status}`)
   if (result.detail !== undefined) lines.push(`причина: ${result.detail}`)
-  lines.push(`задержка: ${result.latencyMs}ms`)
+  if (result.kind !== "skipped") lines.push(`задержка: ${result.latencyMs}ms`)
   return { title: `${iconFor(result.kind)} ${name}`, message: lines.join("\n") }
 }
 
@@ -94,10 +98,15 @@ export function progressLine(result: ProbeResult, name = result.modelID, limit =
   return truncate(`${iconFor(result.kind)} ${name} · ${describe(result)}`, limit)
 }
 
-/** `92/116 ✅ · 24 проблем · 5 мин назад` */
-export function statusLine(summary: Summary, at: number, now: number): string {
+/** `92/116 ✅ · 8 нейтр. · 24 проблем` */
+export function summaryLine(summary: Summary): string {
   const parts = [`${summary.ok}/${summary.total} ✅`]
+  if (summary.neutral > 0) parts.push(`${summary.neutral} нейтр.`)
   if (summary.problems > 0) parts.push(`${summary.problems} проблем`)
-  parts.push(agoLabel(at, now))
   return parts.join(" · ")
+}
+
+/** `92/116 ✅ · 8 нейтр. · 24 проблем · 5 мин назад` */
+export function statusLine(summary: Summary, at: number, now: number): string {
+  return `${summaryLine(summary)} · ${agoLabel(at, now)}`
 }

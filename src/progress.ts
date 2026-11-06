@@ -24,6 +24,11 @@ export interface Progress {
   push(line: string): void
   /** Closes the dialog if this controller still owns the visible one. */
   end(): void
+  /**
+   * Registers a callback for a user-initiated close (Esc / dismissal) and
+   * returns an unsubscribe function. A programmatic `end()` never fires it.
+   */
+  onDismiss(handler: () => void): () => void
   /** True once the user closed the dialog themselves rather than via `end()`. */
   readonly dismissed: boolean
 }
@@ -48,17 +53,24 @@ export function createProgress(
   const [lines, setLines] = createSignal<readonly string[]>([])
   let visible = false
   let dismissed = false
-  // Distinguishes our own `clear()` from the host closing the dialog on the user's behalf.
-  let closing = false
+  // Bumped by `begin()`/`end()`. A close callback from an older dialog (the
+  // host may call it asynchronously after `clear()`) must not look like a user
+  // dismissal and poison the next scan.
+  let generation = 0
+  const dismissHandlers = new Set<() => void>()
   return {
     begin() {
       // Once the user has dismissed the window, never reopen it in this run.
       if (visible || dismissed) return
       visible = true
       setLines([])
+      generation += 1
+      const shown = generation
       api.show(render({ done, total, note, lines }), () => {
+        if (shown !== generation) return
         visible = false
-        if (!closing) dismissed = true
+        dismissed = true
+        for (const handler of [...dismissHandlers]) handler()
       })
     },
     set(next, size, text) {
@@ -72,9 +84,19 @@ export function createProgress(
     end() {
       if (!visible) return
       visible = false
-      closing = true
+      generation += 1
       api.clear()
-      closing = false
+    },
+    onDismiss(handler) {
+      // A stale scan must stop even if the dialog was dismissed before it began.
+      if (dismissed) {
+        handler()
+        return () => undefined
+      }
+      dismissHandlers.add(handler)
+      return () => {
+        dismissHandlers.delete(handler)
+      }
     },
     get dismissed() {
       return dismissed

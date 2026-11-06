@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { canChat, isTextOnly, pickModels, readEndpoint, readModels } from "./select.js"
+import { canChat, isTextOnly, pickModels, preferEndpoint, readEndpoint, readModels } from "./select.js"
 import type { ModelRef } from "./types.js"
 
 const model = (id: string, outputs: readonly string[], type?: string): ModelRef =>
@@ -16,11 +16,35 @@ describe("readEndpoint", () => {
     expect(readEndpoint(envelope)?.apiKey).toBe("sk-2")
   })
 
-  test("returns undefined when the key or url is missing", () => {
-    expect(readEndpoint({ settings: { baseURL: "https://x/v1" } })).toBeUndefined()
+  test("only baseURL is required; local providers may omit the key", () => {
+    expect(readEndpoint({ settings: { baseURL: "https://x/v1" } })).toEqual({ baseURL: "https://x/v1" })
     expect(readEndpoint({ settings: { apiKey: "sk-1" } })).toBeUndefined()
     expect(readEndpoint({ settings: { baseURL: "", apiKey: "sk-1" } })).toBeUndefined()
     expect(readEndpoint(undefined)).toBeUndefined()
+  })
+})
+
+describe("preferEndpoint", () => {
+  const keyedData = { baseURL: "https://data/v1", apiKey: "data-key" }
+  const keylessData = { baseURL: "https://data/v1" }
+  const keyedClient = { baseURL: "https://client/v1", apiKey: "client-key" }
+
+  test("a keyed data record wins", () => {
+    expect(preferEndpoint(keyedData, keyedClient)).toBe(keyedData)
+  })
+
+  test("a keyed client record rescues a keyless data record", () => {
+    expect(preferEndpoint(keylessData, keyedClient)).toBe(keyedClient)
+  })
+
+  test("falls back to the keyless data record when both are keyless", () => {
+    expect(preferEndpoint(keylessData, { baseURL: "https://client/v1" })).toBe(keylessData)
+  })
+
+  test("handles a missing side", () => {
+    expect(preferEndpoint(undefined, keyedClient)).toBe(keyedClient)
+    expect(preferEndpoint(keylessData, undefined)).toBe(keylessData)
+    expect(preferEndpoint(undefined, undefined)).toBeUndefined()
   })
 })
 

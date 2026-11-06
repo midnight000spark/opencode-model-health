@@ -25,4 +25,9 @@ describe("progressLine", () => {
     expect(long.length).toBeLessThanOrEqual(20)
     expect(long).toEndWith("…")
   })
+
+  test("omits latency for a skipped model", () => {
+    const skipped: ProbeResult = { modelID: "r", kind: "skipped", detail: "только /responses", latencyMs: 0 }
+    expect(progressLine(skipped)).toBe("➖ r · не проверяется · только /responses")
+  })
 })

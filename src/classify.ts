@@ -10,9 +10,28 @@ const MESSAGE_LIMIT = 140
  * up and the key is accepted, only the probe budget was too small.
  */
 const TOKEN_LIMIT = /max_tokens|max_completion|output limit|token limit/i
+/**
+ * A provider that does not know the field at all is *not* a token-limit
+ * rejection: `/chat/completions` may simply not accept `max_tokens` for that
+ * model. Those bodies must stay `denied` so a broken probe is never excused.
+ */
+const UNSUPPORTED_FIELD =
+  /\b(unsupported|unknown|unrecognized|unexpected|not supported|invalid)\b/i
 
 export function isTokenLimit(body: string): boolean {
-  return TOKEN_LIMIT.test(body)
+  const text = tokenMessage(body)
+  if (!TOKEN_LIMIT.test(text)) return false
+  return !UNSUPPORTED_FIELD.test(text)
+}
+
+/**
+ * Reads the error message rather than the whole JSON envelope: metadata such as
+ * `"type": "invalid request"` must not turn a real token-limit into `denied`.
+ */
+function tokenMessage(body: string): string {
+  const parsed = parseJSON(body.trim())
+  if (!isRecord(parsed)) return body
+  return messageOf(parsed) ?? body
 }
 
 /** Maps an HTTP status (plus the error body) to the coarse state the dialog shows. */
@@ -28,16 +47,17 @@ export function kindOf(status: number, body = ""): ProbeKind {
 /**
  * Pulls a short, display-safe reason out of a provider error body. Plain-text
  * bodies are kept; a JSON body without a message yields `undefined` instead of
- * dumping the whole blob. Credential-shaped fragments are always masked.
+ * dumping the whole blob. The caller's credential and credential-shaped
+ * fragments are always masked.
  */
-export function reason(body: string): string | undefined {
+export function reason(body: string, secret?: string): string | undefined {
   const text = body.trim()
   if (text === "") return undefined
   const parsed = parseJSON(text)
-  if (parsed === undefined) return truncate(redact(text))
+  if (parsed === undefined) return truncate(redact(text, secret))
   if (!isRecord(parsed)) return undefined
   const message = messageOf(parsed)
-  return message === undefined ? undefined : truncate(redact(message))
+  return message === undefined ? undefined : truncate(redact(message, secret))
 }
 
 export function truncate(text: string, limit = MESSAGE_LIMIT): string {

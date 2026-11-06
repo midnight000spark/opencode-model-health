@@ -28,6 +28,40 @@ describe("parseModels", () => {
     ])
   })
 
+  test("keeps responses-only models, flagged as not probeable", () => {
+    const text = payload([
+      chat("resp-model", ["responses"]),
+      chat("both", ["openai", "responses"]),
+      chat("legacy", ["chat"]),
+    ])
+    expect(parseModels(text)).toEqual([
+      { id: "both", name: "both", outputs: ["text"] },
+      { id: "legacy", name: "legacy", outputs: ["text"] },
+      { id: "resp-model", name: "resp-model", outputs: ["text"], protocol: "responses" },
+    ])
+  })
+
+  test("treats openai-responses aliases as responses, not chat", () => {
+    const text = payload([
+      chat("a", ["openai-responses"]),
+      chat("b", ["openai/responses"]),
+      chat("c", ["openai", "openai/responses"]),
+    ])
+    expect(parseModels(text)).toEqual([
+      { id: "a", name: "a", outputs: ["text"], protocol: "responses" },
+      { id: "b", name: "b", outputs: ["text"], protocol: "responses" },
+      { id: "c", name: "c", outputs: ["text"] },
+    ])
+  })
+
+  test("prefers chat when the same id is listed under several protocols", () => {
+    const text = payload([
+      chat("m", ["responses"]),
+      chat("m", ["openai"]),
+    ])
+    expect(parseModels(text)).toEqual([{ id: "m", name: "m", outputs: ["text"] }])
+  })
+
   test("drops non-chat families by name", () => {
     const text = payload([
       chat("qwen3.7-text-embedding"),
@@ -101,9 +135,10 @@ describe("isChatModel", () => {
     expect(isChatModel({ id: "sdxl", endpoints: ["image-generation", "openai"] })).toBe(false)
   })
 
-  test("accepts alternate OpenAI endpoint names but rejects other vocabularies", () => {
+  test("accepts alternate OpenAI endpoint names and rejects other vocabularies", () => {
     expect(isChatModel({ id: "m", endpoints: ["openai-completions"] })).toBe(true)
     expect(isChatModel({ id: "m", endpoints: ["chat"] })).toBe(true)
+    expect(isChatModel({ id: "m", endpoints: ["responses"] })).toBe(true)
     expect(isChatModel({ id: "m", endpoints: ["gemini"] })).toBe(false)
   })
 })
@@ -129,6 +164,17 @@ describe("discoverModels", () => {
   test("returns undefined on a non-2xx response", async () => {
     const fetch: FetchLike = async () => ({ status: 403, text: async () => "denied" })
     expect(await discoverModels(endpoint, deps(fetch))).toBeUndefined()
+  })
+
+  test("omits Authorization when no key is configured", async () => {
+    const calls: Array<{ init: Parameters<FetchLike>[1] }> = []
+    const fetch: FetchLike = async (_url, init) => {
+      calls.push({ init })
+      return { status: 200, text: async () => payload([chat("m")]) }
+    }
+    await discoverModels({ baseURL: "http://localhost:11434/v1" }, deps(fetch))
+    expect(calls[0]?.init.headers["authorization"]).toBeUndefined()
+    expect(calls[0]?.init.headers["accept"]).toBe("application/json")
   })
 
   test("returns undefined when the request throws", async () => {
@@ -162,6 +208,31 @@ describe("resolveModels", () => {
       { id: "brand-new-model", name: "brand-new-model", outputs: ["text"] },
       { id: "gpt-5.4", name: "GPT 5.4", type: "chat", outputs: ["text"] },
     ])
+  })
+
+  test("keeps the discovered protocol when the id is also configured", async () => {
+    const fetch: FetchLike = async () => ({
+      status: 200,
+      text: async () => payload([chat("gpt-5.4", ["responses"])]),
+    })
+
+    const resolved = await resolveModels(endpoint, deps(fetch), configured)
+
+    expect(resolved.models[0]).toMatchObject({ id: "gpt-5.4", protocol: "responses" })
+  })
+
+  test("drops a configured responses guess when discovery reports chat", async () => {
+    const guesses: readonly ModelRef[] = [
+      { id: "gpt-5.4", name: "GPT 5.4", outputs: ["text"], protocol: "responses" },
+    ]
+    const fetch: FetchLike = async () => ({
+      status: 200,
+      text: async () => payload([chat("gpt-5.4", ["openai"])]),
+    })
+
+    const resolved = await resolveModels(endpoint, deps(fetch), guesses)
+
+    expect(resolved.models[0]).toEqual({ id: "gpt-5.4", name: "GPT 5.4", outputs: ["text"] })
   })
 
   test("falls back to the configured list when discovery fails", async () => {

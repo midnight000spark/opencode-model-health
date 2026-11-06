@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { isRecord, isTokenLimit, kindOf, reason, truncate } from "./classify.js"
-import { mapConcurrent, isInsecure, PROBE_MAX_TOKENS, probeAll, probeModel } from "./probe.js"
-import type { Endpoint, FetchLike, HttpResponseLike } from "./types.js"
+import { mapConcurrent, isInsecure, isLoopbackURL, PROBE_MAX_TOKENS, probeAll, probeModel, probeModels } from "./probe.js"
+import type { Endpoint, FetchLike, HttpResponseLike, ModelRef } from "./types.js"
 
 const endpoint: Endpoint = { baseURL: "https://api.example.com/v1/", apiKey: "sk-secret" }
 
@@ -67,6 +67,63 @@ describe("probeModel", () => {
     expect(result.detail).toBe("connection refused")
   })
 
+  test("omits the Authorization header when no key is configured", async () => {
+    let seen: Record<string, string> | undefined
+    const fetch: FetchLike = async (_url, init) => {
+      seen = init.headers
+      return { status: 200, text: async () => "" }
+    }
+    const result = await probeModel("local", { baseURL: "http://localhost:11434/v1" }, { fetch, timeoutMs: 1000 })
+    expect(result.kind).toBe("ok")
+    expect(seen?.["authorization"]).toBeUndefined()
+    expect(seen?.["content-type"]).toBe("application/json")
+  })
+
+  test("masks the exact key when an upstream echoes it", async () => {
+    const key = "local-9x8y7z"
+    const body = JSON.stringify({ error: { message: `provided key ${key} is invalid` } })
+    const result = await probeModel("m", { baseURL: "https://x.test/v1", apiKey: key }, { fetch: respond(401, body), timeoutMs: 1000 })
+    expect(result.detail).toBe("provided key *** is invalid")
+  })
+
+  test("forwards an external abort to the in-flight request", async () => {
+    const controller = new AbortController()
+    const fetch: FetchLike = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted")
+          error.name = "AbortError"
+          reject(error)
+        })
+        controller.abort()
+      })
+    const result = await probeModel("slow", endpoint, { fetch, timeoutMs: 1000 }, controller.signal)
+    expect(result.kind).toBe("network")
+    expect(result.detail).toBe("timeout")
+  })
+
+  test("does not open a request when the scan is already aborted", async () => {
+    let calls = 0
+    const fetch: FetchLike = async () => {
+      calls += 1
+      return { status: 200, text: async () => "" }
+    }
+    const controller = new AbortController()
+    controller.abort()
+    const result = await probeModel("m", endpoint, { fetch, timeoutMs: 1000 }, controller.signal)
+    expect(calls).toBe(0)
+    expect(result.detail).toBe("timeout")
+  })
+
+  test("masks the exact key inside a transport error", async () => {
+    const key = "local-9x8y7z"
+    const fetch: FetchLike = async () => {
+      throw new Error(`socket closed for ${key}`)
+    }
+    const result = await probeModel("m", { baseURL: "https://x.test/v1", apiKey: key }, { fetch, timeoutMs: 1000 })
+    expect(result.detail).toBe("socket closed for ***")
+  })
+
   test("reports a timeout when the request aborts", async () => {
     const fetch: FetchLike = async (_url, init) =>
       new Promise((_resolve, reject) => {
@@ -89,6 +146,36 @@ describe("probeAll", () => {
   })
 })
 
+describe("probeModels", () => {
+  test("marks responses-only models as skipped without a request", async () => {
+    let calls = 0
+    const fetch: FetchLike = async () => {
+      calls += 1
+      return { status: 200, text: async () => "" }
+    }
+    const models: readonly ModelRef[] = [
+      { id: "chat-model", name: "chat-model", outputs: ["text"] },
+      { id: "resp-model", name: "resp-model", outputs: ["text"], protocol: "responses" },
+    ]
+    const results = await probeModels(models, endpoint, { fetch, timeoutMs: 1000 }, 2)
+    expect(calls).toBe(1)
+    expect(results.map((result) => result.kind)).toEqual(["ok", "skipped"])
+    expect(results[1]?.detail).toContain("/responses")
+  })
+
+  test("reports progress for every model, including skipped ones", async () => {
+    const events: number[] = []
+    const models: readonly ModelRef[] = [
+      { id: "a", name: "a", outputs: ["text"], protocol: "responses" },
+      { id: "b", name: "b", outputs: ["text"] },
+    ]
+    await probeModels(models, endpoint, { fetch: respond(200), timeoutMs: 1000 }, 1, (event) =>
+      events.push(event.done),
+    )
+    expect(events).toEqual([1, 2])
+  })
+})
+
 describe("isInsecure", () => {
   test("flags cleartext to a remote host", () => {
     expect(isInsecure({ baseURL: "http://api.example.com/v1", apiKey: "k" })).toBe(true)
@@ -103,6 +190,20 @@ describe("isInsecure", () => {
 
   test("does not flag an unparseable URL", () => {
     expect(isInsecure({ baseURL: "not a url", apiKey: "k" })).toBe(false)
+  })
+
+  test("does not flag cleartext when there is no key to leak", () => {
+    expect(isInsecure({ baseURL: "http://api.example.com/v1" })).toBe(false)
+  })
+})
+
+describe("isLoopbackURL", () => {
+  test("recognises local hosts and rejects remote or invalid URLs", () => {
+    expect(isLoopbackURL("http://localhost:11434/v1")).toBe(true)
+    expect(isLoopbackURL("http://127.0.0.1:8000/v1")).toBe(true)
+    expect(isLoopbackURL("http://[::1]:8000/v1")).toBe(true)
+    expect(isLoopbackURL("https://api.example.com/v1")).toBe(false)
+    expect(isLoopbackURL("not a url")).toBe(false)
   })
 })
 

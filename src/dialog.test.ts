@@ -82,7 +82,7 @@ describe("showHealth", () => {
     expect(fake.selects[0]?.options.map((option) => option.value)).toEqual(["glm-5.3"])
   })
 
-  test("counts reachable as healthy and renders it below problems", async () => {
+  test("counts reachable as neutral and renders it below problems", async () => {
     const three: readonly ModelRef[] = [
       { id: "ok-model", name: "OK", outputs: ["text"] },
       { id: "reach-model", name: "Reach", outputs: ["text"] },
@@ -108,7 +108,33 @@ describe("showHealth", () => {
       "ok-model",
     ])
     expect(input?.options[1]?.title).toBe("🟢 Reach")
-    expect(input?.title).toContain("2/3 ✅")
+    expect(input?.title).toContain("1/3 ✅ · 1 нейтр.")
+  })
+
+  test("renders a skipped model as neutral with no latency", async () => {
+    const two: readonly ModelRef[] = [
+      { id: "ok-model", name: "OK", outputs: ["text"] },
+      { id: "resp-model", name: "Resp", outputs: ["text"], protocol: "responses" },
+    ]
+    const fake = fakeUi(async () => undefined)
+    await showHealth(
+      fake.ui,
+      view({
+        mode: "text",
+        models: two,
+        results: [
+          { modelID: "ok-model", kind: "ok", status: 200, latencyMs: 10 },
+          { modelID: "resp-model", kind: "skipped", detail: "только /responses", latencyMs: 0 },
+        ],
+      }),
+    )
+    const [input] = fake.selects
+    expect(input?.options.map((option) => option.value)).toEqual(["resp-model", "ok-model"])
+    expect(input?.options[0]?.title).toBe("➖ Resp")
+    expect(input?.options[0]?.description).toContain("не проверяется")
+    expect(input?.options[0]?.description).not.toContain("0ms")
+    expect(input?.title).toContain("1/2 ✅ · 1 нейтр.")
+    expect(input?.title).not.toContain("проблем")
   })
 
   test("closes on escape without a toast", async () => {

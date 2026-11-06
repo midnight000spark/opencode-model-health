@@ -10,15 +10,31 @@ const NON_CHAT_TYPES = ["image", "embedding"] as const
 /**
  * Reads baseURL/apiKey from a provider payload. Accepts either a `ProviderInfo`
  * or an API envelope (`{ location, data }`) because the TUI feed and the HTTP
- * API wrap the same object differently.
+ * API wrap the same object differently. Only `baseURL` is required: local
+ * OpenAI-compatible servers (Ollama, LM Studio, vLLM) often have no key.
  */
 export function readEndpoint(source: unknown): Endpoint | undefined {
   const settings = readSettings(source)
   if (settings === undefined) return undefined
   const baseURL = settings["baseURL"]
+  if (!isFilledString(baseURL)) return undefined
   const apiKey = settings["apiKey"]
-  if (!isFilledString(baseURL) || !isFilledString(apiKey)) return undefined
-  return { baseURL, apiKey }
+  return isFilledString(apiKey) ? { baseURL, apiKey } : { baseURL }
+}
+
+/**
+ * Chooses between the data-feed endpoint and the HTTP-client endpoint. A keyed
+ * data record wins; otherwise a keyed client record is preferred, because the
+ * data feed may omit or redact the key. Keyless results fall back to whichever
+ * record exists.
+ */
+export function preferEndpoint(
+  fromData?: Endpoint,
+  fromClient?: Endpoint,
+): Endpoint | undefined {
+  if (fromData?.apiKey !== undefined) return fromData
+  if (fromClient?.apiKey !== undefined) return fromClient
+  return fromData ?? fromClient
 }
 
 /** Normalises raw model payloads (array or `{ data: [] }`) into refs of one provider. */

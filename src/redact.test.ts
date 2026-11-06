@@ -37,6 +37,17 @@ describe("redact", () => {
     expect(redact("api_key=abcdef123456 not accepted")).toBe("api_key=*** not accepted")
   })
 
+  test("masks the caller's exact credential wherever it appears", () => {
+    expect(redact("upstream echoed local-Gh7xQ2 back", "local-Gh7xQ2")).toBe("upstream echoed *** back")
+    expect(redact("local-Gh7xQ2/local-Gh7xQ2", "local-Gh7xQ2")).toBe("***/***")
+  })
+
+  test("ignores only an empty secret", () => {
+    expect(redact("a normal sentence", "")).toBe("a normal sentence")
+    expect(redact("a normal sentence", undefined)).toBe("a normal sentence")
+    expect(redact("key a here", "a")).toBe("key *** here")
+  })
+
   test("leaves ordinary prose and model names untouched", () => {
     expect(redact("Insufficient Balance for gpt-5.5")).toBe("Insufficient Balance for gpt-5.5")
   })

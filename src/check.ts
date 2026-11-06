@@ -1,8 +1,14 @@
-import { DEFAULT_TTL_MS, isFresh, summarize, type Snapshot } from "./cache.js"
+import {
+  DEFAULT_TTL_MS,
+  fingerprint,
+  isFresh,
+  sameEndpoint,
+  type Snapshot,
+} from "./cache.js"
 import { showHealth, type DialogUi } from "./dialog.js"
 import { resolveModels } from "./discover.js"
 import { progressLine } from "./format.js"
-import { DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT_MS, probeAll } from "./probe.js"
+import { DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT_MS, probeModels } from "./probe.js"
 import type { Progress } from "./progress.js"
 import { pickModels, type ModelMode } from "./select.js"
 import type { Endpoint, FetchLike, ModelRef, ProbeResult } from "./types.js"
@@ -74,21 +80,16 @@ async function loop(session: Session): Promise<void> {
   let mode = session.settings.mode
   let force = false
   for (;;) {
-    const snapshot = await snapshotFor(session, force)
+    const outcome = await snapshotFor(session, force)
     force = false
-    const dismissed = session.progress.dismissed
     session.progress.end()
-    // Respect a manual close: keep the (now cached) results but do not pop a dialog.
-    if (dismissed) {
-      const summary = summarize(snapshot.results)
-      const suffix = summary.problems > 0 ? ` · ${summary.problems} проблем` : ""
-      session.ui.toast({
-        message: `Проверка завершена: ${summary.ok}/${summary.total} ✅${suffix}`,
-        variant: "info",
-        duration: 5000,
-      })
+    // A dismissed progress window cancels the scan: report it and keep the
+    // previous snapshot instead of showing results the user did not wait for.
+    if (outcome.cancelled) {
+      session.ui.toast({ message: "Проверка отменена", variant: "info", duration: 4000 })
       return
     }
+    const snapshot = outcome.snapshot
     const intent = await showHealth(session.ui, {
       providerID: session.settings.provider,
       mode,
@@ -107,44 +108,91 @@ async function loop(session: Session): Promise<void> {
   }
 }
 
-/** Reuses the cached scan until it expires, is forced, or no longer covers these models. */
-async function snapshotFor(session: Session, force = false): Promise<Snapshot> {
+type ScanOutcome =
+  | { readonly cancelled: true }
+  | { readonly cancelled: false; readonly snapshot: Snapshot }
+
+/**
+ * Reuses the cached scan until it expires, is forced, no longer covers these
+ * models, or belongs to a different endpoint/credential. A user dismissal
+ * aborts the in-flight scan and is reported as `cancelled` without caching.
+ */
+async function snapshotFor(session: Session, force = false): Promise<ScanOutcome> {
   const cached = session.store.providers[session.settings.provider]
   if (
     cached !== undefined &&
     isFresh(cached, Date.now(), session.settings.ttlMs, force) &&
+    sameEndpoint(cached, session.endpoint) &&
     coversModels(cached.results, session.models)
   ) {
-    return cached
+    // A dismissal that raced the lookup must not pop results anyway.
+    if (session.progress.dismissed) return { cancelled: true }
+    return { cancelled: false, snapshot: cached }
   }
-  session.progress.begin()
-  session.progress.set(0, session.models.length, "проверяю…")
-  const names = new Map(session.models.map((model) => [model.id, model.name]))
-  const results = await probeAll(
-    session.models.map((model) => model.id),
-    session.endpoint,
-    { fetch: session.http, timeoutMs: session.settings.timeoutMs },
-    session.settings.concurrency,
-    (event) => {
-      session.progress.set(event.done, event.total)
-      session.progress.push(progressLine(event.result, names.get(event.result.modelID)))
-    },
-  )
-  const snapshot: Snapshot = { at: Date.now(), results }
-  await session.update((draft) => {
-    draft.providers[session.settings.provider] = snapshot
-  })
-  return snapshot
+  const controller = new AbortController()
+  const off = session.progress.onDismiss(() => controller.abort())
+  try {
+    // Closing the progress window before the scan even starts must not fire it.
+    if (controller.signal.aborted) return { cancelled: true }
+    session.progress.begin()
+    session.progress.set(0, session.models.length, "проверяю…")
+    const names = new Map(session.models.map((model) => [model.id, model.name]))
+    const results = await probeModels(
+      session.models,
+      session.endpoint,
+      { fetch: session.http, timeoutMs: session.settings.timeoutMs },
+      session.settings.concurrency,
+      (event) => {
+        session.progress.set(event.done, event.total)
+        session.progress.push(progressLine(event.result, names.get(event.result.modelID)))
+      },
+      controller.signal,
+    )
+    if (controller.signal.aborted) return { cancelled: true }
+    const snapshot: Snapshot = {
+      at: Date.now(),
+      baseURL: session.endpoint.baseURL,
+      credential: fingerprint(session.endpoint.apiKey ?? ""),
+      results,
+    }
+    await session.update((draft) => {
+      draft.providers[session.settings.provider] = snapshot
+    })
+    // A dismissal that lands during the write must win: drop the fresh entry so
+    // the next run cannot show results the user cancelled.
+    if (controller.signal.aborted) {
+      const previous =
+        cached === undefined ? undefined : { ...cached, results: [...cached.results] }
+      await session.update((draft) => {
+        if (draft.providers[session.settings.provider]?.at === snapshot.at) {
+          // Restore the pre-scan snapshot (usually undefined) instead of
+          // destroying a cache the user already had. Copy it so a store proxy
+          // is never written back as-is.
+          draft.providers[session.settings.provider] = previous
+        }
+      })
+      return { cancelled: true }
+    }
+    return { cancelled: false, snapshot }
+  } finally {
+    off()
+  }
 }
 
 /**
  * True when the cached scan covers exactly the models about to be checked, so a
  * changed provider list (or config fallback) is never shown from stale results.
+ * The protocol is part of the identity: a model that moved between chat and
+ * responses must not reuse the previous verdict.
  */
 function coversModels(results: readonly ProbeResult[], models: readonly ModelRef[]): boolean {
   if (results.length !== models.length) return false
-  const ids = new Set(models.map((model) => model.id))
-  return results.every((result) => ids.has(result.modelID))
+  const protocols = new Map(models.map((model) => [model.id, model.protocol ?? "chat"]))
+  return results.every((result) => {
+    const protocol = protocols.get(result.modelID)
+    if (protocol === undefined) return false
+    return (protocol === "responses") === (result.kind === "skipped")
+  })
 }
 
 export function readSettings(options: Readonly<Record<string, unknown>>): Settings {

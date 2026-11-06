@@ -44,6 +44,13 @@ describe("kindOf", () => {
     expect(kindOf(403, "max_tokens limit")).toBe("denied")
   })
 
+  test("keeps a 400 that rejects the field itself denied", () => {
+    const body = JSON.stringify({
+      error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model." },
+    })
+    expect(kindOf(400, body)).toBe("denied")
+  })
+
   test("keeps a plain 400 without a token-limit reason denied", () => {
     expect(kindOf(400, JSON.stringify({ error: { message: "invalid model" } }))).toBe("denied")
   })
@@ -55,6 +62,34 @@ describe("isTokenLimit", () => {
     expect(isTokenLimit("max_completion_tokens is too small")).toBe(true)
     expect(isTokenLimit("token limit exceeded")).toBe(true)
     expect(isTokenLimit("Insufficient Balance")).toBe(false)
+  })
+
+  test("does not excuse a provider that rejects the field itself", () => {
+    expect(isTokenLimit("Unsupported parameter: 'max_tokens'")).toBe(false)
+    expect(isTokenLimit("unknown parameter max_completion_tokens")).toBe(false)
+    expect(isTokenLimit("unrecognized field: token limit")).toBe(false)
+    expect(isTokenLimit("max_tokens is not supported with this model")).toBe(false)
+  })
+
+  test("judges the error message, not unrelated JSON metadata", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Could not finish the message because max_tokens was reached.",
+        type: "invalid request",
+      },
+    })
+    expect(isTokenLimit(body)).toBe(true)
+  })
+
+  test("keeps an invalid max_tokens value denied", () => {
+    const body = JSON.stringify({ error: { message: "Invalid value for max_tokens: must be >= 1" } })
+    expect(isTokenLimit(body)).toBe(false)
+    expect(kindOf(400, body)).toBe("denied")
+  })
+
+  test("reads an unsupported field from the JSON message too", () => {
+    const body = JSON.stringify({ error: { message: "Unsupported parameter: max_tokens" } })
+    expect(isTokenLimit(body)).toBe(false)
   })
 })
 
@@ -85,6 +120,11 @@ describe("reason", () => {
   test("masks credentials echoed inside the error body", () => {
     const body = JSON.stringify({ error: { message: "bad key sk-live-abcdef123456" } })
     expect(reason(body)).toBe("bad key sk-***")
+  })
+
+  test("masks the caller's exact key even without a recognised prefix", () => {
+    const body = JSON.stringify({ error: { message: "provided key local-9x8y7z is invalid" } })
+    expect(reason(body, "local-9x8y7z")).toBe("provided key *** is invalid")
   })
 
   test("returns undefined for a JSON body without a message", () => {

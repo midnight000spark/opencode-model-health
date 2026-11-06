@@ -1,18 +1,26 @@
 /** Shared types for the model-health probe. */
 
 /**
- * Coarse outcome of probing one model.
- * `reachable` means the model answered but rejected the probe payload itself
- * (e.g. a reasoning model that needs a bigger `max_tokens`) — the key works.
+ * Coarse outcome of probing one model. Two kinds are `neutral` rather than
+ * healthy or broken:
+ *
+ * - `reachable`: the model answered but rejected the probe payload itself
+ *   (e.g. a reasoning model that needs a bigger `max_tokens`) — the key works.
+ * - `skipped`: the model is only served through a protocol this probe does not
+ *   speak (currently `openai/responses`), so no verdict is possible.
  */
 export type ProbeKind =
   | "ok"
   | "reachable"
+  | "skipped"
   | "denied"
   | "quota"
   | "missing"
   | "unavailable"
   | "network"
+
+/** Wire protocol a provider serves a chat model through. */
+export type ChatProtocol = "chat" | "responses"
 
 export interface ProbeResult {
   readonly modelID: string
@@ -24,10 +32,14 @@ export interface ProbeResult {
   readonly latencyMs: number
 }
 
-/** Everything needed to call an OpenAI-compatible endpoint. */
+/**
+ * Everything needed to call an OpenAI-compatible endpoint. `apiKey` is optional:
+ * local servers (Ollama, LM Studio, vLLM) usually accept unauthenticated calls,
+ * and sending an `Authorization` header without a key would only break them.
+ */
 export interface Endpoint {
   readonly baseURL: string
-  readonly apiKey: string
+  readonly apiKey?: string
 }
 
 /** A model as the health check sees it. */
@@ -36,6 +48,8 @@ export interface ModelRef {
   readonly name: string
   readonly type?: string
   readonly outputs: readonly string[]
+  /** Omitted when the model speaks the default `chat/completions` protocol. */
+  readonly protocol?: ChatProtocol
 }
 
 /** Minimal response shape so the probe does not depend on DOM types. */

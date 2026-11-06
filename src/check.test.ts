@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { fingerprint } from "./cache.js"
 import { type Settings, type Store, runCheck, readSettings } from "./check.js"
 import type { DialogUi } from "./dialog.js"
 import type { Progress } from "./progress.js"
 import type { Endpoint, FetchLike, ModelRef } from "./types.js"
 
 const endpoint: Endpoint = { baseURL: "https://api.test/v1", apiKey: "secret" }
+const credential = fingerprint("secret")
 
 const settings: Settings = {
   provider: "p",
@@ -24,9 +26,10 @@ interface ProgressHandle {
   dismiss(): void
 }
 
-function fakeProgress(dismissed = false): ProgressHandle {
+function fakeProgress(): ProgressHandle {
   const state = { begins: 0, ends: 0, lines: [] as string[], lastNote: undefined as string | undefined }
-  let closed = dismissed
+  let closed = false
+  const handlers = new Set<() => void>()
   const progress: Progress = {
     begin() {
       state.begins += 1
@@ -40,11 +43,25 @@ function fakeProgress(dismissed = false): ProgressHandle {
     end() {
       state.ends += 1
     },
+    onDismiss(handler) {
+      if (closed) {
+        handler()
+        return () => undefined
+      }
+      handlers.add(handler)
+      return () => {
+        handlers.delete(handler)
+      }
+    },
     get dismissed() {
       return closed
     },
   }
-  return { progress, state, dismiss: () => (closed = true) }
+  const dismiss = () => {
+    closed = true
+    for (const handler of [...handlers]) handler()
+  }
+  return { progress, state, dismiss }
 }
 
 function fakeUi(behaviour: (input: SelectInput) => Promise<string | undefined>) {
@@ -83,6 +100,7 @@ function emptyStore(): Store {
 }
 
 const listOne = JSON.stringify({ data: [{ id: "m1", supported_endpoint_types: ["openai"] }] })
+const listResponses = JSON.stringify({ data: [{ id: "m1", supported_endpoint_types: ["responses"] }] })
 
 describe("readSettings", () => {
   test("applies defaults and coerces options", () => {
@@ -172,7 +190,14 @@ describe("runCheck", () => {
     const { ui } = fakeUi(async () => undefined)
     const counters = { posts: 0 }
     const store: Store = {
-      providers: { p: { at: Date.now(), results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }] } },
+      providers: {
+        p: {
+          at: Date.now(),
+          baseURL: endpoint.baseURL,
+          credential,
+          results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }],
+        },
+      },
     }
 
     await runCheck({
@@ -194,7 +219,14 @@ describe("runCheck", () => {
     const { ui } = fakeUi(async () => undefined)
     const counters = { posts: 0 }
     const store: Store = {
-      providers: { p: { at: Date.now(), results: [{ modelID: "old", kind: "ok", latencyMs: 1 }] } },
+      providers: {
+        p: {
+          at: Date.now(),
+          baseURL: endpoint.baseURL,
+          credential,
+          results: [{ modelID: "old", kind: "ok", latencyMs: 1 }],
+        },
+      },
     }
 
     await runCheck({
@@ -264,8 +296,194 @@ describe("runCheck", () => {
     expect(counters.posts).toBe(2)
   })
 
-  test("toasts the summary instead of opening the dialog after a manual dismiss", async () => {
-    const handle = fakeProgress(true)
+  test("rescans when only the credential changed", async () => {
+    const handle = fakeProgress()
+    const { ui } = fakeUi(async () => undefined)
+    const counters = { posts: 0 }
+    const store: Store = {
+      providers: {
+        p: {
+          at: Date.now(),
+          baseURL: endpoint.baseURL,
+          credential: fingerprint("old-key"),
+          results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }],
+        },
+      },
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(counters.posts).toBe(1)
+  })
+
+  test("rescans when a model switches to the responses protocol", async () => {
+    const handle = fakeProgress()
+    const { ui } = fakeUi(async () => undefined)
+    const counters = { posts: 0 }
+    const store: Store = {
+      providers: {
+        p: {
+          at: Date.now(),
+          baseURL: endpoint.baseURL,
+          credential,
+          results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }],
+        },
+      },
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http: httpFor(listResponses, counters),
+    })
+
+    expect(counters.posts).toBe(0)
+    expect(store.providers["p"]?.results[0]?.kind).toBe("skipped")
+  })
+
+  test("does not show a warm cache after the progress window was dismissed", async () => {
+    const handle = fakeProgress()
+    handle.dismiss()
+    const { ui, selects, toasts } = fakeUi(async () => undefined)
+    const counters = { posts: 0 }
+    const store: Store = {
+      providers: {
+        p: {
+          at: Date.now(),
+          baseURL: endpoint.baseURL,
+          credential,
+          results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }],
+        },
+      },
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(counters.posts).toBe(0)
+    expect(selects).toHaveLength(0)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+  })
+
+  test("drops the snapshot when a dismissal lands during the cache write", async () => {
+    const handle = fakeProgress()
+    const { ui, selects, toasts } = fakeUi(async () => undefined)
+    const counters = { posts: 0 }
+    const store = emptyStore()
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => {
+        mutation(store)
+        handle.dismiss()
+      },
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(selects).toHaveLength(0)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+    expect(store.providers["p"]).toBeUndefined()
+  })
+
+  test("restores the previous cache when a forced refresh is cancelled during the write", async () => {
+    const handle = fakeProgress()
+    let calls = 0
+    const { ui, toasts } = fakeUi(async (input) => {
+      calls += 1
+      if (calls === 1) input.actions?.[0]?.onTrigger()
+      return undefined
+    })
+    const counters = { posts: 0 }
+    const previous = {
+      at: Date.now() - 1_000,
+      baseURL: endpoint.baseURL,
+      credential,
+      results: [{ modelID: "m1", kind: "ok" as const, latencyMs: 1 }],
+    }
+    const store: Store = { providers: { p: previous } }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => {
+        mutation(store)
+        handle.dismiss()
+      },
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(counters.posts).toBe(1)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+    expect(store.providers["p"]).toEqual(previous)
+  })
+
+  test("cancels the scan and caches nothing when the progress window is dismissed", async () => {
+    const handle = fakeProgress()
+    const { ui, selects, toasts } = fakeUi(async () => undefined)
+    const store = emptyStore()
+    let posts = 0
+    const http: FetchLike = async (url, init) => {
+      if (url.endsWith("/models")) return { status: 200, text: async () => listOne }
+      posts += 1
+      if (init.signal?.aborted === true) return abort()
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(abortError()))
+        // Simulate Esc while the first probe is in flight.
+        handle.dismiss()
+      })
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http,
+    })
+
+    expect(posts).toBe(1)
+    expect(selects).toHaveLength(0)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+    expect(store.providers["p"]).toBeUndefined()
+  })
+
+  test("an already dismissed progress window never starts a scan", async () => {
+    const handle = fakeProgress()
+    handle.dismiss()
     const { ui, selects, toasts } = fakeUi(async () => undefined)
     const counters = { posts: 0 }
     const store = emptyStore()
@@ -281,7 +499,19 @@ describe("runCheck", () => {
       http: httpFor(listOne, counters),
     })
 
+    expect(counters.posts).toBe(0)
     expect(selects).toHaveLength(0)
-    expect(toasts.some((toast) => toast.message.includes("Проверка завершена"))).toBe(true)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+    expect(store.providers["p"]).toBeUndefined()
   })
 })
+
+function abortError(): Error {
+  const error = new Error("aborted")
+  error.name = "AbortError"
+  return error
+}
+
+async function abort(): Promise<never> {
+  throw abortError()
+}

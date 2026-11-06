@@ -170,4 +170,78 @@ describe("createProgress", () => {
     progress.end()
     expect(progress.dismissed).toBe(false)
   })
+
+  test("notifies onDismiss for a user close, not for a programmatic end", () => {
+    let onClose: (() => void) | undefined
+    const progress = createProgress(
+      {
+        show: (_render, close) => {
+          onClose = close
+        },
+        clear: () => {
+          onClose?.()
+        },
+      },
+      () => () => ({}),
+    )
+    let fired = 0
+    const off = progress.onDismiss(() => {
+      fired += 1
+    })
+
+    progress.begin()
+    progress.end()
+    expect(fired).toBe(0)
+
+    progress.begin()
+    onClose?.()
+    expect(fired).toBe(1)
+
+    off()
+    // A late host close must not reach an unsubscribed handler.
+    onClose?.()
+    expect(fired).toBe(1)
+    expect(progress.dismissed).toBe(true)
+  })
+
+  test("ignores an asynchronous close callback after a programmatic end", async () => {
+    let onClose: (() => void) | undefined
+    const progress = createProgress(
+      {
+        show: (_render, close) => {
+          onClose = close
+        },
+        clear: () => {
+          queueMicrotask(() => onClose?.())
+        },
+      },
+      () => () => ({}),
+    )
+
+    progress.begin()
+    progress.end()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(progress.dismissed).toBe(false)
+  })
+
+  test("fires an onDismiss handler registered after dismissal", () => {
+    let onClose: (() => void) | undefined
+    const progress = createProgress(
+      {
+        show: (_render, close) => {
+          onClose = close
+        },
+        clear: () => undefined,
+      },
+      () => () => ({}),
+    )
+    progress.begin()
+    onClose?.()
+
+    let fired = 0
+    progress.onDismiss(() => {
+      fired += 1
+    })
+    expect(fired).toBe(1)
+  })
 })

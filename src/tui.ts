@@ -5,7 +5,7 @@ import type { DialogUi } from "./dialog.js"
 import { isInsecure } from "./probe.js"
 import { createDialogProgress } from "./progress-view.js"
 import { redact } from "./redact.js"
-import { readEndpoint, readModels } from "./select.js"
+import { preferEndpoint, readEndpoint, readModels } from "./select.js"
 import type { Endpoint, FetchLike } from "./types.js"
 
 type Context = Plugin.Context
@@ -71,6 +71,7 @@ async function open(
   const progress = createDialogProgress(context.ui.dialog, context.theme, settings.provider)
   // Open the window before any I/O so the command always reacts instantly.
   progress.begin()
+  let secret: string | undefined
   try {
     const http = resolveFetch()
     if (http === undefined) {
@@ -85,10 +86,11 @@ async function open(
       progress.end()
       await ui.alert({
         title: "Провайдер недоступен",
-        message: `Не удалось получить baseURL/apiKey для «${settings.provider}». Плагин работает с OpenAI-совместимыми провайдерами, у которых заданы baseURL и apiKey; проверь, что провайдер включён и ключ на месте.`,
+        message: `Не удалось получить baseURL для «${settings.provider}». Плагин работает с OpenAI-совместимыми провайдерами: нужен baseURL, а apiKey — только если сервер его требует. Проверь, что провайдер включён.`,
       })
       return
     }
+    secret = endpoint.apiKey
     if (isInsecure(endpoint)) {
       ui.toast({
         message: "baseURL без https — ключ уйдёт в открытом виде. Используй https или loopback.",
@@ -98,6 +100,9 @@ async function open(
     }
     const configured = readModels(context.data.location.model.list(), settings.provider)
     await runCheck({ ui, progress, settings, store, update, endpoint, configured, http })
+  } catch (error) {
+    // Re-throw sanitised: the command-level handler must never print the key.
+    throw new Error(redact(errorMessage(error), secret))
   } finally {
     progress.end()
   }
@@ -110,13 +115,16 @@ async function sync(context: Context): Promise<void> {
   ])
 }
 
-/** Prefers the TUI data feed, falls back to the HTTP client. */
+/** Prefers the TUI data feed, falling back to the HTTP client. */
 async function resolveEndpoint(context: Context, providerID: string): Promise<Endpoint | undefined> {
   const known = context.data.location.provider.list()?.find((provider) => provider.id === providerID)
   const fromData = readEndpoint(known)
-  if (fromData !== undefined) return fromData
+  // A keyed record is authoritative. A keyless record is ambiguous (local
+  // server, or a feed that omitted/redacted the key), so always ask the client
+  // and prefer a result that carries a key.
+  if (fromData?.apiKey !== undefined) return fromData
   const response = await context.client.provider.get({ providerID }).catch(() => undefined)
-  return readEndpoint(response)
+  return preferEndpoint(fromData, readEndpoint(response))
 }
 
 function adapter(context: Context): DialogUi {
@@ -137,6 +145,9 @@ function resolveFetch(): FetchLike | undefined {
 }
 
 function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error)
-  return truncate(redact(raw), 120)
+  return truncate(redact(errorMessage(error)), 120)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
