@@ -448,6 +448,73 @@ describe("runCheck", () => {
     expect(store.providers["p"]).toEqual(previous)
   })
 
+  test("returns a cancellation toast without I/O when the signal is already aborted", async () => {
+    const handle = fakeProgress()
+    const { ui, toasts, selects } = fakeUi(async () => undefined)
+    const store = emptyStore()
+    const controller = new AbortController()
+    controller.abort()
+    let calls = 0
+    const http: FetchLike = async () => {
+      calls += 1
+      return { status: 200, text: async () => listOne }
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http,
+      signal: controller.signal,
+    })
+
+    expect(calls).toBe(0)
+    expect(selects).toHaveLength(0)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+  })
+
+  test("cancels discovery without probing", async () => {
+    const handle = fakeProgress()
+    const { ui, toasts, selects } = fakeUi(async () => undefined)
+    const store = emptyStore()
+    const controller = new AbortController()
+    let posts = 0
+    const http: FetchLike = async (url, init) => {
+      if (url.endsWith("/models")) {
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const error = new Error("aborted")
+            error.name = "AbortError"
+            reject(error)
+          })
+          controller.abort()
+        })
+      }
+      posts += 1
+      return { status: 200, text: async () => "" }
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http,
+      signal: controller.signal,
+    })
+
+    expect(posts).toBe(0)
+    expect(selects).toHaveLength(0)
+    expect(toasts.some((toast) => toast.message === "Проверка отменена")).toBe(true)
+  })
+
   test("cancels the scan and caches nothing when the progress window is dismissed", async () => {
     const handle = fakeProgress()
     const { ui, selects, toasts } = fakeUi(async () => undefined)

@@ -71,6 +71,9 @@ async function open(
   const progress = createDialogProgress(context.ui.dialog, context.theme, settings.provider)
   // Open the window before any I/O so the command always reacts instantly.
   progress.begin()
+  // Dismissal must also abort sync/discovery, not only the POST probes.
+  const cancel = new AbortController()
+  const offCancel = progress.onDismiss(() => cancel.abort())
   let secret: string | undefined
   try {
     const http = resolveFetch()
@@ -81,6 +84,10 @@ async function open(
     }
     progress.set(0, 0, "синхронизация…")
     await sync(context)
+    if (cancel.signal.aborted) {
+      ui.toast({ message: "Проверка отменена", variant: "info", duration: 4000 })
+      return
+    }
     const endpoint = await resolveEndpoint(context, settings.provider)
     if (endpoint === undefined) {
       progress.end()
@@ -99,11 +106,22 @@ async function open(
       })
     }
     const configured = readModels(context.data.location.model.list(), settings.provider)
-    await runCheck({ ui, progress, settings, store, update, endpoint, configured, http })
+    await runCheck({
+      ui,
+      progress,
+      settings,
+      store,
+      update,
+      endpoint,
+      configured,
+      http,
+      signal: cancel.signal,
+    })
   } catch (error) {
     // Re-throw sanitised: the command-level handler must never print the key.
     throw new Error(redact(errorMessage(error), secret))
   } finally {
+    offCancel()
     progress.end()
   }
 }

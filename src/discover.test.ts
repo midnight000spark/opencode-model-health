@@ -184,6 +184,42 @@ describe("discoverModels", () => {
     expect(await discoverModels(endpoint, deps(fetch))).toBeUndefined()
   })
 
+  test("returns undefined without a request when already aborted", async () => {
+    let calls = 0
+    const fetch: FetchLike = async () => {
+      calls += 1
+      return { status: 200, text: async () => payload([chat("m")]) }
+    }
+    const controller = new AbortController()
+    controller.abort()
+    const models = await discoverModels(endpoint, {
+      fetch,
+      timeoutMs: 1000,
+      signal: controller.signal,
+    })
+    expect(models).toBeUndefined()
+    expect(calls).toBe(0)
+  })
+
+  test("aborts the models request when the signal fires", async () => {
+    const controller = new AbortController()
+    const fetch: FetchLike = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted")
+          error.name = "AbortError"
+          reject(error)
+        })
+        controller.abort()
+      })
+    const models = await discoverModels(endpoint, {
+      fetch,
+      timeoutMs: 1000,
+      signal: controller.signal,
+    })
+    expect(models).toBeUndefined()
+  })
+
   test("returns undefined when the body cannot be parsed", async () => {
     const fetch: FetchLike = async () => ({ status: 200, text: async () => "<html/>" })
     expect(await discoverModels(endpoint, deps(fetch))).toBeUndefined()

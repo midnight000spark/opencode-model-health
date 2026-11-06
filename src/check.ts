@@ -39,6 +39,8 @@ export interface CheckDeps {
   /** Models configured in OpenCode, used to enrich names and as a fallback. */
   readonly configured: readonly ModelRef[]
   readonly http: FetchLike
+  /** Cancels discovery and probing when the progress window is dismissed. */
+  readonly signal?: AbortSignal
 }
 
 interface Session extends CheckDeps {
@@ -51,13 +53,23 @@ interface Session extends CheckDeps {
  * without the OpenCode host.
  */
 export async function runCheck(deps: CheckDeps): Promise<void> {
-  const { ui, progress, settings, endpoint, configured, http } = deps
+  const { ui, progress, settings, endpoint, configured, http, signal } = deps
+  // A dismissal during sync/endpoint resolution must not start discovery.
+  if (isAborted(signal)) {
+    toastCancelled(ui)
+    return
+  }
   progress.set(0, 0, "получаю список моделей…")
   const resolved = await resolveModels(
     endpoint,
-    { fetch: http, timeoutMs: settings.timeoutMs },
+    { fetch: http, timeoutMs: settings.timeoutMs, signal },
     configured,
   )
+  // Discovery was aborted: report the cancellation instead of a fake fallback.
+  if (isAborted(signal)) {
+    toastCancelled(ui)
+    return
+  }
   if (resolved.source === "config") {
     ui.toast({
       message: "Список моделей от провайдера недоступен — беру конфиг OpenCode",
@@ -86,7 +98,7 @@ async function loop(session: Session): Promise<void> {
     // A dismissed progress window cancels the scan: report it and keep the
     // previous snapshot instead of showing results the user did not wait for.
     if (outcome.cancelled) {
-      session.ui.toast({ message: "Проверка отменена", variant: "info", duration: 4000 })
+      toastCancelled(session.ui)
       return
     }
     const snapshot = outcome.snapshot
@@ -131,6 +143,9 @@ async function snapshotFor(session: Session, force = false): Promise<ScanOutcome
   }
   const controller = new AbortController()
   const off = session.progress.onDismiss(() => controller.abort())
+  const forwardAbort = () => controller.abort()
+  if (session.signal?.aborted === true) controller.abort()
+  else session.signal?.addEventListener("abort", forwardAbort, { once: true })
   try {
     // Closing the progress window before the scan even starts must not fire it.
     if (controller.signal.aborted) return { cancelled: true }
@@ -176,7 +191,17 @@ async function snapshotFor(session: Session, force = false): Promise<ScanOutcome
     return { cancelled: false, snapshot }
   } finally {
     off()
+    session.signal?.removeEventListener("abort", forwardAbort)
   }
+}
+
+/** One wording for every cancellation path, so the toast stays consistent. */
+function toastCancelled(ui: DialogUi): void {
+  ui.toast({ message: "Проверка отменена", variant: "info", duration: 4000 })
+}
+
+function isAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true
 }
 
 /**

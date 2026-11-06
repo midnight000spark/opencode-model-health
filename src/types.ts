@@ -74,6 +74,8 @@ export interface HttpDeps {
   /** Injected so tests can run without network access. */
   readonly fetch: FetchLike
   readonly timeoutMs: number
+  /** Aborts the request (discovery uses it when the progress window closes). */
+  readonly signal?: AbortSignal
 }
 
 export type ProbeDeps = HttpDeps

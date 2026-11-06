@@ -62,8 +62,12 @@ export async function discoverModels(
   endpoint: Endpoint,
   deps: HttpDeps,
 ): Promise<ModelRef[] | undefined> {
+  // A cancelled scan must not start a request it will immediately throw away.
+  if (deps.signal?.aborted === true) return undefined
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs)
+  const forwardAbort = () => controller.abort()
+  deps.signal?.addEventListener("abort", forwardAbort, { once: true })
   try {
     const response = await deps.fetch(joinURL(endpoint.baseURL, MODELS_PATH), {
       method: "GET",
@@ -76,6 +80,7 @@ export async function discoverModels(
     return undefined
   } finally {
     clearTimeout(timer)
+    deps.signal?.removeEventListener("abort", forwardAbort)
   }
 }
 
