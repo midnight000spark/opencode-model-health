@@ -18,7 +18,8 @@ describe("fingerprint", () => {
   test("is stable, fixed-width and does not contain the secret", () => {
     const hash = fingerprint("sk-secret")
     expect(hash).toBe(fingerprint("sk-secret"))
-    expect(hash).toHaveLength(16)
+    expect(hash).toHaveLength(64)
+    expect(hash).toMatch(/^[0-9a-f]{64}$/)
     expect(hash).not.toContain("secret")
     expect(fingerprint("sk-other")).not.toBe(hash)
   })

@@ -27,11 +27,15 @@ export function isTokenLimit(body: string): boolean {
 /**
  * Reads the error message rather than the whole JSON envelope: metadata such as
  * `"type": "invalid request"` must not turn a real token-limit into `denied`.
+ * A structured envelope without a `message` proves nothing about access, so it
+ * is treated conservatively (empty) instead of scanning arbitrary fields.
  */
 function tokenMessage(body: string): string {
-  const parsed = parseJSON(body.trim())
-  if (!isRecord(parsed)) return body
-  return messageOf(parsed) ?? body
+  const text = body.trim()
+  const parsed = parseJSON(text)
+  if (parsed === undefined) return text
+  if (!isRecord(parsed)) return ""
+  return messageOf(parsed) ?? ""
 }
 
 /** Maps an HTTP status (plus the error body) to the coarse state the dialog shows. */

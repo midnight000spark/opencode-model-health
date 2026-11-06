@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { Endpoint, ProbeKind, ProbeResult } from "./types.js"
 
 export const DEFAULT_TTL_MS = 10 * 60 * 1000
@@ -5,7 +6,7 @@ export const DEFAULT_TTL_MS = 10 * 60 * 1000
 /**
  * Cached outcome of one scan of a provider's models. The endpoint identity is
  * stored too: a changed `baseURL` or key must never reuse results from the old
- * account, so the credential is kept only as an irreversible fingerprint.
+ * account, so the credential is kept only as a SHA-256 fingerprint.
  */
 export interface Snapshot {
   readonly at: number
@@ -25,18 +26,11 @@ export interface Summary {
 }
 
 /**
- * 64-bit FNV-1a. Used only to detect "same key as last time"; the result is not
- * reversible and the secret itself is never written to the store.
+ * SHA-256 of the credential. Used only to detect "same key as last time"; the
+ * digest is one-way and the secret itself is never written to the store.
  */
 export function fingerprint(value: string): string {
-  let hash = 0xcbf29ce484222325n
-  const prime = 0x100000001b3n
-  const mask = 0xffffffffffffffffn
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= BigInt(value.charCodeAt(index))
-    hash = (hash * prime) & mask
-  }
-  return hash.toString(16).padStart(16, "0")
+  return createHash("sha256").update(value).digest("hex")
 }
 
 /** Neither the URL nor the key may be reused from a different account. */

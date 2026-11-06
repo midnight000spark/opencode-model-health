@@ -87,6 +87,20 @@ describe("isTokenLimit", () => {
     expect(kindOf(400, body)).toBe("denied")
   })
 
+  test("does not trust a JSON envelope without a message", () => {
+    const typed = JSON.stringify({ error: { type: "max_tokens exceeded" } })
+    const coded = JSON.stringify({ error: { code: "max_tokens" } })
+    expect(isTokenLimit(typed)).toBe(false)
+    expect(isTokenLimit(coded)).toBe(false)
+    expect(kindOf(400, typed)).toBe("denied")
+    expect(kindOf(422, coded)).toBe("denied")
+  })
+
+  test("does not trust a JSON string or array body", () => {
+    expect(isTokenLimit(JSON.stringify("max_tokens exceeded"))).toBe(false)
+    expect(isTokenLimit(JSON.stringify(["max_tokens exceeded"]))).toBe(false)
+  })
+
   test("reads an unsupported field from the JSON message too", () => {
     const body = JSON.stringify({ error: { message: "Unsupported parameter: max_tokens" } })
     expect(isTokenLimit(body)).toBe(false)
