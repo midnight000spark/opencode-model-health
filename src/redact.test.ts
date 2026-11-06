@@ -18,6 +18,21 @@ describe("redact", () => {
     )
   })
 
+  test("masks a URL password that itself contains an @", () => {
+    expect(redact("https://user:p@ss@api.example.com/v1")).toBe("https://***:***@api.example.com/v1")
+  })
+
+  test("masks Basic and Digest credentials, not just the scheme", () => {
+    expect(redact("authorization: Basic dXNlcjpwYXNz")).toBe("authorization: Basic ***")
+    const digest = redact("authorization: Digest abc123def456")
+    expect(digest).toBe("authorization: Digest ***")
+    expect(digest).not.toContain("abc123def456")
+  })
+
+  test("masks an authorization assignment that carries no scheme", () => {
+    expect(redact("authorization=SECRET123")).toBe("authorization=***")
+  })
+
   test("masks key/value assignments", () => {
     expect(redact("api_key=abcdef123456 not accepted")).toBe("api_key=*** not accepted")
   })

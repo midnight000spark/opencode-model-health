@@ -70,10 +70,12 @@ describe("parseModels", () => {
     const text = payload([
       chat("Qwen2.5-VL-72B-Instruct"),
       chat("qwen3.5-omni-flash"),
+      chat("meta/llama-3.2-11b-vision-instruct"),
       chat("plain-model"),
     ])
     expect(parseModels(text)).toEqual([
       { id: "Qwen2.5-VL-72B-Instruct", name: "Qwen2.5-VL-72B-Instruct", outputs: ["text", "image"] },
+      { id: "meta/llama-3.2-11b-vision-instruct", name: "meta/llama-3.2-11b-vision-instruct", outputs: ["text", "image"] },
       { id: "plain-model", name: "plain-model", outputs: ["text"] },
       { id: "qwen3.5-omni-flash", name: "qwen3.5-omni-flash", outputs: ["text", "image", "audio"] },
     ])

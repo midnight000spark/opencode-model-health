@@ -5,7 +5,7 @@ import { progressLine } from "./format.js"
 import { DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT_MS, probeAll } from "./probe.js"
 import type { Progress } from "./progress.js"
 import { pickModels, type ModelMode } from "./select.js"
-import type { Endpoint, FetchLike, ModelRef } from "./types.js"
+import type { Endpoint, FetchLike, ModelRef, ProbeResult } from "./types.js"
 
 /** Example default; users are expected to override it via plugin options. */
 export const DEFAULT_PROVIDER = "reformboss"
@@ -107,10 +107,14 @@ async function loop(session: Session): Promise<void> {
   }
 }
 
-/** Reuses the cached scan until it expires, a rescan is forced, or the cache is missing. */
+/** Reuses the cached scan until it expires, is forced, or no longer covers these models. */
 async function snapshotFor(session: Session, force = false): Promise<Snapshot> {
   const cached = session.store.providers[session.settings.provider]
-  if (cached !== undefined && isFresh(cached, Date.now(), session.settings.ttlMs, force)) {
+  if (
+    cached !== undefined &&
+    isFresh(cached, Date.now(), session.settings.ttlMs, force) &&
+    coversModels(cached.results, session.models)
+  ) {
     return cached
   }
   session.progress.begin()
@@ -131,6 +135,16 @@ async function snapshotFor(session: Session, force = false): Promise<Snapshot> {
     draft.providers[session.settings.provider] = snapshot
   })
   return snapshot
+}
+
+/**
+ * True when the cached scan covers exactly the models about to be checked, so a
+ * changed provider list (or config fallback) is never shown from stale results.
+ */
+function coversModels(results: readonly ProbeResult[], models: readonly ModelRef[]): boolean {
+  if (results.length !== models.length) return false
+  const ids = new Set(models.map((model) => model.id))
+  return results.every((result) => ids.has(result.modelID))
 }
 
 export function readSettings(options: Readonly<Record<string, unknown>>): Settings {

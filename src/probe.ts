@@ -121,8 +121,11 @@ export function isInsecure(endpoint: Endpoint): boolean {
   const url = parseURL(endpoint.baseURL)
   if (url === undefined || url.protocol !== "http:") return false
   const host = url.hostname.toLowerCase()
-  return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]"
+  return !LOOPBACK_HOSTS.has(host)
 }
+
+/** Cleartext is acceptable to a local server: `http://localhost:11434` is common. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"])
 
 function parseURL(value: string): URL | undefined {
   try {

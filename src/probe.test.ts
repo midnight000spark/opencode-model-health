@@ -98,6 +98,7 @@ describe("isInsecure", () => {
     expect(isInsecure({ baseURL: "https://api.example.com/v1", apiKey: "k" })).toBe(false)
     expect(isInsecure({ baseURL: "http://localhost:11434/v1", apiKey: "k" })).toBe(false)
     expect(isInsecure({ baseURL: "http://127.0.0.1:8000/v1", apiKey: "k" })).toBe(false)
+    expect(isInsecure({ baseURL: "http://0.0.0.0:11434/v1", apiKey: "k" })).toBe(false)
   })
 
   test("does not flag an unparseable URL", () => {

@@ -5,6 +5,10 @@ on:
     branches: ["**"]
   pull_request:
 
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

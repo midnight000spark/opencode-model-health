@@ -172,7 +172,7 @@ describe("runCheck", () => {
     const { ui } = fakeUi(async () => undefined)
     const counters = { posts: 0 }
     const store: Store = {
-      providers: { p: { at: Date.now(), results: [{ modelID: "cfg1", kind: "ok", latencyMs: 1 }] } },
+      providers: { p: { at: Date.now(), results: [{ modelID: "m1", kind: "ok", latencyMs: 1 }] } },
     }
 
     await runCheck({
@@ -187,6 +187,56 @@ describe("runCheck", () => {
     })
 
     expect(counters.posts).toBe(0)
+  })
+
+  test("rescans when the cached snapshot no longer covers the current models", async () => {
+    const handle = fakeProgress()
+    const { ui } = fakeUi(async () => undefined)
+    const counters = { posts: 0 }
+    const store: Store = {
+      providers: { p: { at: Date.now(), results: [{ modelID: "old", kind: "ok", latencyMs: 1 }] } },
+    }
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(counters.posts).toBe(1)
+    expect(store.providers["p"]?.results.map((result) => result.modelID)).toEqual(["m1"])
+  })
+
+  test("toggles mode and reopens the dialog without rescanning", async () => {
+    const handle = fakeProgress()
+    let calls = 0
+    const { ui, selects } = fakeUi(async (input) => {
+      calls += 1
+      if (calls === 1) input.actions?.[1]?.onTrigger()
+      return undefined
+    })
+    const counters = { posts: 0 }
+    const store = emptyStore()
+
+    await runCheck({
+      ui,
+      progress: handle.progress,
+      settings,
+      store,
+      update: async (mutation) => mutation(store),
+      endpoint,
+      configured,
+      http: httpFor(listOne, counters),
+    })
+
+    expect(selects).toHaveLength(2)
+    expect(selects[1]?.title).toContain("все")
+    expect(counters.posts).toBe(1)
   })
 
   test("rescans on a refresh intent", async () => {
